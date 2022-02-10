@@ -90,80 +90,80 @@ void GameMessageHandler::HandleMessage(RakNet::BitStream* inStream, const System
             break;
         }
         
-		case GAME_MSG_PLAYER_LOADED: {
-			GameMessages::SendRestoreToPostLoadStats(entity, sysAddr);
-			entity->SetPlayerReadyForUpdates();
-			
-			auto* player = dynamic_cast<Player*>(entity);
-			if (player != nullptr)
+	case GAME_MSG_PLAYER_LOADED: {
+		GameMessages::SendRestoreToPostLoadStats(entity, sysAddr);
+		entity->SetPlayerReadyForUpdates();
+
+		auto* player = dynamic_cast<Player*>(entity);
+		if (player != nullptr)
+		{
+			player->ConstructLimboEntities();
+		}
+
+		InventoryComponent* inv = entity->GetComponent<InventoryComponent>();
+		if (inv) {
+			auto items = inv->GetEquippedItems();
+			for (auto pair : items) {
+				const auto item = pair.second;
+
+				inv->AddItemSkills(item.lot);
+			}
+		}
+
+		auto* destroyable = entity->GetComponent<DestroyableComponent>();
+		destroyable->SetImagination(destroyable->GetImagination());
+		EntityManager::Instance()->SerializeEntity(entity);
+
+		std::vector<Entity*> racingControllers = EntityManager::Instance()->GetEntitiesByComponent(COMPONENT_TYPE_RACING_CONTROL);
+		for (Entity* racingController : racingControllers) {
+			auto* racingComponent = racingController->GetComponent<RacingControlComponent>();
+			if (racingComponent != nullptr)
 			{
-				player->ConstructLimboEntities();
+				racingComponent->OnPlayerLoaded(entity);
 			}
+		}
 
-			InventoryComponent* inv = entity->GetComponent<InventoryComponent>();
-			if (inv) {
-				auto items = inv->GetEquippedItems();
-				for (auto pair : items) {
-					const auto item = pair.second;
+		Entity* zoneControl = EntityManager::Instance()->GetZoneControlEntity();
+		for (CppScripts::Script* script : CppScripts::GetEntityScripts(zoneControl)) {
+			script->OnPlayerLoaded(zoneControl, player);
+		}
 
-					inv->AddItemSkills(item.lot);
+		std::vector<Entity*> scriptedActs = EntityManager::Instance()->GetEntitiesByComponent(COMPONENT_TYPE_SCRIPT);
+		for (Entity* scriptEntity : scriptedActs) {
+			if (scriptEntity->GetObjectID() != zoneControl->GetObjectID()) { // Don't want to trigger twice on instance worlds
+				for (CppScripts::Script* script : CppScripts::GetEntityScripts(scriptEntity)) {
+					script->OnPlayerLoaded(scriptEntity, player);
 				}
 			}
+		}
 
-			auto* destroyable = entity->GetComponent<DestroyableComponent>();
-			destroyable->SetImagination(destroyable->GetImagination());
-			EntityManager::Instance()->SerializeEntity(entity);
+		//Kill player if health == 0
+		if (entity->GetIsDead()) {
+			entity->Smash(entity->GetObjectID());
+		}
 
-			std::vector<Entity*> racingControllers = EntityManager::Instance()->GetEntitiesByComponent(COMPONENT_TYPE_RACING_CONTROL);
-			for (Entity* racingController : racingControllers) {
-				auto* racingComponent = racingController->GetComponent<RacingControlComponent>();
-				if (racingComponent != nullptr)
-				{
-					racingComponent->OnPlayerLoaded(entity);
-				}
-			}
+		//if the player has moved significantly, move them back:
+		if ((entity->GetPosition().y - entity->GetCharacter()->GetOriginalPos().y) > 2.0f) {
+			// Disabled until fixed
+			//GameMessages::SendTeleport(entity->GetObjectID(), entity->GetCharacter()->GetOriginalPos(), entity->GetCharacter()->GetOriginalRot(), entity->GetSystemAddress(), true, true);
+		}
 
-			Entity* zoneControl = EntityManager::Instance()->GetZoneControlEntity();
-			for (CppScripts::Script* script : CppScripts::GetEntityScripts(zoneControl)) {
-				script->OnPlayerLoaded(zoneControl, player);
-			}
+		/**
+		 * Invoke the OnZoneLoad event on the player character
+		 */
+		auto* character = entity->GetCharacter();
 
-			std::vector<Entity*> scriptedActs = EntityManager::Instance()->GetEntitiesByComponent(COMPONENT_TYPE_SCRIPT);
-			for (Entity* scriptEntity : scriptedActs) {
-				if (scriptEntity->GetObjectID() != zoneControl->GetObjectID()) { // Don't want to trigger twice on instance worlds
-					for (CppScripts::Script* script : CppScripts::GetEntityScripts(scriptEntity)) {
-						script->OnPlayerLoaded(scriptEntity, player);
-					}
-				}
-			}
+		if (character != nullptr) {
+			character->OnZoneLoad();
+		}
 
-			//Kill player if health == 0
-			if (entity->GetIsDead()) {
-				entity->Smash(entity->GetObjectID());
-			}
+		Game::logger->Log("GameMessageHandler", "Player %s (%llu) loaded.\n", entity->GetCharacter()->GetName().c_str(), entity->GetObjectID());
 
-			//if the player has moved significantly, move them back:
-			if ((entity->GetPosition().y - entity->GetCharacter()->GetOriginalPos().y) > 2.0f) {
-				// Disabled until fixed
-				//GameMessages::SendTeleport(entity->GetObjectID(), entity->GetCharacter()->GetOriginalPos(), entity->GetCharacter()->GetOriginalRot(), entity->GetSystemAddress(), true, true);
-			}
-
-			/**
-			 * Invoke the OnZoneLoad event on the player character
-			 */
-			auto* character = entity->GetCharacter();
-
-			if (character != nullptr) {
-				character->OnZoneLoad();
-			}
-
-			Game::logger->Log("GameMessageHandler", "Player %s (%llu) loaded.\n", entity->GetCharacter()->GetName().c_str(), entity->GetObjectID());
-
-			// After we've done our thing, tell the client they're ready
-            GameMessages::SendPlayerReady(dZoneManager::Instance()->GetZoneControlObject(), sysAddr);
-            GameMessages::SendPlayerReady(entity, sysAddr);
-			
-            break;
+		// After we've done our thing, tell the client they're ready
+		GameMessages::SendPlayerReady(entity, sysAddr);
+            	GameMessages::SendPlayerReady(dZoneManager::Instance()->GetZoneControlObject(), sysAddr);
+            	
+           	 break;
         }
         
         case GAME_MSG_REQUEST_LINKED_MISSION: {
