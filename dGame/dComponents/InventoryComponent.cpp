@@ -619,11 +619,33 @@ void InventoryComponent::LoadXml(tinyxml2::XMLDocument* document)
 			
 			if (extraInfo)
 			{
-				std::string modInfo = extraInfo->Attribute("ma");
+				std::unordered_map<std::string, std::string> extraInfoMap = {
+					{"b", "modelBehaviors"},
+					{"ub", "userModelBehaviors"},
+					{"ud", "userModelDesc"},
+					{"ui", "userModelID"},
+					{"um", "userModelMod"},
+					{"un", "userModelName"},
+					{"uo", "userModelOpt"},
+					{"up", "userModelPhysicsType"}
+				};
+
+				for (const auto& item : extraInfoMap) {
+					auto* attribute = extraInfo->FindAttribute(item.first.c_str());
+
+					if (attribute) {
+						LDFBaseData* extraInfoItem = new LDFData<std::u16string>(GeneralUtils::ASCIIToUTF16(item.second), GeneralUtils::ASCIIToUTF16(attribute->Value()));
+						config.push_back(extraInfoItem);
+					}
+				}
+
+				if (extraInfo->FindAttribute("ma")) {
+					std::string modInfo = extraInfo->Attribute("ma");
 				
-				LDFBaseData* moduleAssembly = new LDFData<std::u16string>(u"assemblyPartLOTs", GeneralUtils::ASCIIToUTF16(modInfo.substr(2, modInfo.size() - 1)));
-				
-				config.push_back(moduleAssembly);
+					LDFBaseData* moduleAssembly = new LDFData<std::u16string>(u"assemblyPartLOTs", GeneralUtils::ASCIIToUTF16(modInfo.substr(2, modInfo.size() - 1)));
+					
+					config.push_back(moduleAssembly);
+				}
 			}
 			
 			const auto* item = new Item(id, lot, inventory, slot, count, bound, config, parent, subKey);
