@@ -634,7 +634,8 @@ void InventoryComponent::LoadXml(tinyxml2::XMLDocument* document)
 					auto* attribute = extraInfo->FindAttribute(item.first.c_str());
 
 					if (attribute) {
-						LDFBaseData* extraInfoItem = new LDFData<std::u16string>(GeneralUtils::ASCIIToUTF16(item.second), GeneralUtils::ASCIIToUTF16(attribute->Value()));
+						std::string value = attribute->Value();
+						LDFBaseData* extraInfoItem = new LDFData<std::u16string>(GeneralUtils::ASCIIToUTF16(item.second), GeneralUtils::ASCIIToUTF16(value.substr(2, value.size() - 1)));
 						config.push_back(extraInfoItem);
 					}
 				}
@@ -766,17 +767,33 @@ void InventoryComponent::UpdateXml(tinyxml2::XMLDocument* document)
 			itemElement->SetAttribute("parent", item->GetParent());
 			// End custom xml
 
-			for (auto* data : item->GetConfig())
-			{
-				if (data->GetKey() != u"assemblyPartLOTs")
-				{
-					continue;
+			std::unordered_map<std::string, std::u16string> extraInfoMap = {
+				{"b", u"modelBehaviors"},
+				{"ub", u"userModelBehaviors"},
+				{"ud", u"userModelDesc"},
+				{"ui", u"userModelID"},
+				{"um", u"userModelMod"},
+				{"un", u"userModelName"},
+				{"uo", u"userModelOpt"},
+				{"up", u"userModelPhysicsType"}
+			};
+
+			bool hasExtraInfo = false;
+			tinyxml2::XMLElement* extraInfo = nullptr;
+
+			for (const auto& extraInfoItem : extraInfoMap) { 
+				for (auto* configItem : item->GetConfig()) {
+					if (configItem->GetKey() == extraInfoItem.second) {
+						if (!hasExtraInfo) {
+							extraInfo = document->NewElement("x");
+							hasExtraInfo = true;
+						}
+						extraInfo->SetAttribute(extraInfoItem.first.c_str(), configItem->GetString(false).c_str());
+					}
 				}
+			}
 
-				auto* extraInfo = document->NewElement("x");
-
-				extraInfo->SetAttribute("ma", data->GetString(false).c_str());
-
+			if (hasExtraInfo) {
 				itemElement->LinkEndChild(extraInfo);
 			}
 			
