@@ -155,6 +155,8 @@ public:
      */
 	void AddModel(LWOOBJID modelId, LWOOBJID spawnerId);
 
+    void HandleBBBSaveRequest(uint8_t* inData, uint32_t lxfmlSize, LWOOBJID localId, const SystemAddress& sysAddr, NiPoint3 pos = NiPoint3::ZERO, NiQuaternion rot = NiQuaternion::IDENTITY);
+
     /**
      * Returns all the models on this property, indexed by property ID, containing their spawn objects
      * @return all the models on this proeprty
@@ -162,7 +164,6 @@ public:
 	const std::map<LWOOBJID, LWOOBJID>& GetModels() const;
 	
     LWOCLONEID GetCloneId() { return clone_Id; };
-
 private:
     /**
      * This

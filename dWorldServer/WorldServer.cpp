@@ -1218,6 +1218,11 @@ void HandlePacket(Packet* packet) {
 			break;
 		}
 
+		case 0x78: {
+			Game::logger->Log("WorldServer", "Failed to download UGC model error sent to world, someone doesn't have a web server running.\n");
+			break;
+		}
+
 	default:
 		Game::server->GetLogger()->Log("HandlePacket", "Unknown world packet received: %i\n", int(packet->data[3]));
 	}

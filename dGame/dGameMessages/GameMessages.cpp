@@ -2409,40 +2409,7 @@ void GameMessages::HandleBBBLoadItemRequest(RakNet::BitStream* inStream, Entity*
 }
 
 void GameMessages::HandleBBBSaveRequest(RakNet::BitStream* inStream, Entity* entity, const SystemAddress& sysAddr) {
-	/*
-								  ___            ___                                 
-		  /\  /\___ _ __ ___     / __\ ___      /   \_ __ __ _  __ _  ___  _ __  ___ 
-		 / /_/ / _ \ '__/ _ \   /__\/// _ \    / /\ / '__/ _` |/ _` |/ _ \| '_ \/ __|
-		/ __  /  __/ | |  __/  / \/  \  __/   / /_//| | | (_| | (_| | (_) | | | \__ \
-		\/ /_/ \___|_|  \___|  \_____/\___|  /___,' |_|  \__,_|\__, |\___/|_| |_|___/
-															   |___/                 
-		   ___                               _                                       
-		  / __\ _____      ____ _ _ __ ___  / \                                      
-		 /__\/// _ \ \ /\ / / _` | '__/ _ \/  /                                      
-		/ \/  \  __/\ V  V / (_| | | |  __/\_/                                       
-		\_____/\___| \_/\_/ \__,_|_|  \___\/                                         
-                                                                             
-						<>=======()
-							   (/\___   /|\\          ()==========<>_
-									 \_/ | \\        //|\   ______/ \)
-									   \_|  \\      // | \_/
-										 \|\/|\_   //  /\/
-										  (oo)\ \_//  /
-										 //_/\_\/ /  |
-										@@/  |=\  \  |
-											 \_=\_ \ |
-											   \==\ \|\_ snd
-											__(\===\(  )\
-										   (((~) __(_/   |
-												(((~) \  /
-												______/ /
-												'------'
-	*/
-
-	//First, we have Wincent's clean methods of reading in the data received from the client.
 	LWOOBJID localId;
-	uint32_t timeTaken;
-
 	inStream->Read(localId);
 
 	uint32_t ld0Size;
@@ -2454,8 +2421,8 @@ void GameMessages::HandleBBBSaveRequest(RakNet::BitStream* inStream, Entity* ent
 	
 	uint32_t lxfmlSize;
 	inStream->Read(lxfmlSize);
-	uint8_t* inData = static_cast<uint8_t*>(std::malloc(lxfmlSize));
 
+	uint8_t* inData = static_cast<uint8_t*>(std::malloc(lxfmlSize));
 	if (inData == nullptr) {
 		return;
 	}
@@ -2465,205 +2432,10 @@ void GameMessages::HandleBBBSaveRequest(RakNet::BitStream* inStream, Entity* ent
 		inStream->Read(c);
 		inData[i] = c;
 	}
-	
-	inStream->Read(timeTaken);
 
-	/*
-		Disabled this, as it's kinda silly to do this roundabout way of storing plaintext lxfml, then recompressing
-		it to send it back to the client.
+	// [u32] - time taken
 
-		On DLU we had agreed that bricks wouldn't be taken anyway, but if your server decides otherwise, feel free to
-		comment this back out and add the needed code to get the bricks used from lxfml and take them from the inventory.
-
-		Note, in the live client it'll still display the bricks going out as they're being used, but on relog/world change,
-		they reappear as we didn't take them.
-	*/
-
-	////Decompress the SD0 from the client so we can process the lxfml properly
-	//uint8_t* outData = new uint8_t[327680];
-	//int32_t error;
-	//int32_t size = ZCompression::Decompress(inData, lxfmlSize, outData, 327680, error);
-
-	//if (size == -1) {
-	//	Game::logger->Log("GameMessages", "Failed to decompress LXFML: (%i)\n", error);
-	//	return;
-	//}
-	//
-	//std::string lxfml(reinterpret_cast<char*>(outData), size); //std::string version of the decompressed data!
-
-	//Now, the cave of dragons:
-
-	//We runs this in async because the http library here is blocking, meaning it'll halt the thread. 
-	//But we don't want the server to go unresponsive, because then the client would disconnect.
-	std::async(std::launch::async, [&]() {
-
-		//We need to get a new ID for our model first:
-		ObjectIDManager::Instance()->RequestPersistentID([=](uint32_t newID) {
-			LWOOBJID newIDL = newID;
-			newIDL = GeneralUtils::SetBit(newIDL, OBJECT_BIT_CHARACTER);
-			newIDL = GeneralUtils::SetBit(newIDL, OBJECT_BIT_PERSISTENT);
-
-			ObjectIDManager::Instance()->RequestPersistentID([=](uint32_t blueprintIDSmall) {
-				blueprintIDSmall = ObjectIDManager::Instance()->GenerateRandomObjectID();
-				LWOOBJID blueprintID = blueprintIDSmall;
-				blueprintID = GeneralUtils::SetBit(blueprintID, OBJECT_BIT_CHARACTER);
-				blueprintID = GeneralUtils::SetBit(blueprintID, OBJECT_BIT_PERSISTENT);
-
-				//We need to get the propertyID: (stolen from Wincent's propertyManagementComp)
-				const auto& worldId = dZoneManager::Instance()->GetZone()->GetZoneID();
-
-				const auto zoneId = worldId.GetMapID();
-				const auto cloneId = worldId.GetCloneID();
-
-				std::stringstream query;
-
-				query << "SELECT id FROM PropertyTemplate WHERE mapID = " << std::to_string(zoneId) << ";";
-
-				auto result = CDClientDatabase::ExecuteQuery(query.str());
-
-				if (result.eof() || result.fieldIsNull(0)) {
-					return;
-				}
-
-				int templateId = result.getIntField(0);
-
-				result.finalize();
-
-				auto* propertyLookup = Database::CreatePreppedStmt("SELECT * FROM properties WHERE template_id = ? AND clone_id = ?;");
-
-				propertyLookup->setInt(1, templateId);
-				propertyLookup->setInt64(2, cloneId);
-
-				auto* propertyEntry = propertyLookup->executeQuery();
-				uint64_t propertyId = 0;
-
-				if (propertyEntry->next()) {
-					propertyId = propertyEntry->getUInt64(1);
-				}
-
-				delete propertyLookup;
-
-				//Insert into ugc:
-				auto ugcs = Database::CreatePreppedStmt("INSERT INTO `ugc`(`id`, `account_id`, `character_id`, `is_optimized`, `lxfml`, `bake_ao`, `filename`) VALUES (?,?,?,?,?,?,?)");
-				ugcs->setUInt(1, blueprintIDSmall);
-				ugcs->setInt(2, entity->GetParentUser()->GetAccountID());
-				ugcs->setInt(3, entity->GetCharacter()->GetID());
-				ugcs->setInt(4, 0);
-
-				//whacky stream biz
-				std::string s((char*)inData, lxfmlSize);
-				std::istringstream iss(s);
-				std::istream& stream = iss;
-
-				ugcs->setBlob(5, &iss);
-				ugcs->setBoolean(6, false);
-				ugcs->setString(7, "weedeater.lxfml");
-				ugcs->execute();
-				delete ugcs;
-
-				//Insert into the db as a BBB model:
-				auto* stmt = Database::CreatePreppedStmt("INSERT INTO `properties_contents`(`id`, `property_id`, `ugc_id`, `lot`, `x`, `y`, `z`, `rx`, `ry`, `rz`, `rw`) VALUES (?,?,?,?,?,?,?,?,?,?,?)");
-				stmt->setUInt64(1, newIDL);
-				stmt->setUInt64(2, propertyId);
-				stmt->setUInt(3, blueprintIDSmall);
-				stmt->setUInt(4, 14); //14 is the lot the BBB models use
-				stmt->setDouble(5, 0.0f); //x
-				stmt->setDouble(6, 0.0f); //y
-				stmt->setDouble(7, 0.0f); //z
-				stmt->setDouble(8, 0.0f);
-				stmt->setDouble(9, 0.0f);
-				stmt->setDouble(10, 0.0f);
-				stmt->setDouble(11, 0.0f);
-				stmt->execute();
-				delete stmt;
-
-				/*
-					Commented out until UGC server would be updated to use a sd0 file instead of lxfml stream.
-					(or you uncomment the lxfml decomp stuff above)
-				*/
-
-				////Send off to UGC for processing, if enabled:
-				//if (Game::config->GetValue("ugc_remote") == "1") {	
-				//	std::string ugcIP = Game::config->GetValue("ugc_ip");
-				//	int ugcPort = std::stoi(Game::config->GetValue("ugc_port"));
-
-				//	httplib::Client cli(ugcIP, ugcPort); //connect to UGC HTTP server using our config above ^
-
-				//	//Send out a request:
-				//	std::string request = "/3dservices/UGCC150/150" + std::to_string(blueprintID) + ".lxfml";
-				//	cli.Put(request.c_str(), lxfml.c_str(), "text/lxfml");
-
-				//	//When the "put" above returns, it means that the UGC HTTP server is done processing our model &
-				//	//the nif, hkx and checksum files are ready to be downloaded from cache.
-				//}
-
-				//Tell the client their model is saved: (this causes us to actually pop out of our current state):
-				CBITSTREAM;
-				PacketUtils::WriteHeader(bitStream, CLIENT, MSG_CLIENT_BLUEPRINT_SAVE_RESPONSE);
-				bitStream.Write(localId);
-				bitStream.Write<unsigned int>(0);
-				bitStream.Write<unsigned int>(1);
-				bitStream.Write(blueprintID);
-
-				bitStream.Write(lxfmlSize + 9);
-
-				//Write a fake sd0 header:
-				bitStream.Write<unsigned char>(0x73); //s
-				bitStream.Write<unsigned char>(0x64); //d
-				bitStream.Write<unsigned char>(0x30); //0
-				bitStream.Write<unsigned char>(0x01); //1
-				bitStream.Write<unsigned char>(0xFF); //end magic
-
-				bitStream.Write(lxfmlSize);
-
-				for (size_t i = 0; i < lxfmlSize; ++i)
-					bitStream.Write(inData[i]);
-
-				SEND_PACKET;
-				PacketUtils::SavePacket("MSG_CLIENT_BLUEPRINT_SAVE_RESPONSE.bin", (char*)bitStream.GetData(), bitStream.GetNumberOfBytesUsed());
-
-				//Now we have to construct this object:
-				/*
-				* This needs to be sent as config data, but I don't know how to right now.
-					'blueprintid': (9, 1152921508346399522),
-					'componentWhitelist': (1, 1),
-					'modelType': (1, 2),
-					'propertyObjectID': (7, True),
-					'userModelID': (9, 1152921510759098799)
-				*/
-
-				EntityInfo info;
-				info.lot = 14;
-				info.pos = {};
-				info.rot = {};
-				info.spawner = nullptr;
-				info.spawnerID = entity->GetObjectID();
-				info.spawnerNodeID = 0;
-
-				LDFBaseData* ldfBlueprintID = new LDFData<LWOOBJID>(u"blueprintid", blueprintID);
-				LDFBaseData* componentWhitelist = new LDFData<int>(u"componentWhitelist", 1);
-				LDFBaseData* modelType = new LDFData<int>(u"modelType", 2);
-				LDFBaseData* propertyObjectID = new LDFData<bool>(u"propertyObjectID", true);
-				LDFBaseData* userModelID = new LDFData<LWOOBJID>(u"userModelID", newIDL);
-
-				info.settings.push_back(ldfBlueprintID);
-				info.settings.push_back(componentWhitelist);
-				info.settings.push_back(modelType);
-				info.settings.push_back(propertyObjectID);
-				info.settings.push_back(userModelID);
-
-				Entity* newEntity = EntityManager::Instance()->CreateEntity(info, nullptr);
-				if (newEntity) {
-					EntityManager::Instance()->ConstructEntity(newEntity);
-
-					//Make sure the propMgmt doesn't delete our model after the server dies
-					//Trying to do this after the entity is constructed. Shouldn't really change anything but
-					//there was an issue with builds not appearing since it was placed above ConstructEntity.
-					PropertyManagementComponent::Instance()->AddModel(newEntity->GetObjectID(), newIDL);
-				}
-			});
-		});
-	});
+	PropertyManagementComponent::Instance()->HandleBBBSaveRequest(inData, lxfmlSize, localId, sysAddr);
 }
 
 void GameMessages::HandlePropertyEntranceSync(RakNet::BitStream* inStream, Entity* entity, const SystemAddress& sysAddr)

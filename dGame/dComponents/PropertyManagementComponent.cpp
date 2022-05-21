@@ -16,6 +16,8 @@
 #include "Player.h"
 #include "RocketLaunchpadControlComponent.h"
 #include "PropertyEntranceComponent.h"
+#include <dServer.h>
+#include <PacketUtils.h>
 
 #include <vector>
 #include "CppScripts.h"
@@ -555,7 +557,42 @@ void PropertyManagementComponent::DeleteModel(const LWOOBJID id, const int delet
 	{
 		item->SetCount(item->GetCount() - 1);
 
-		Game::logger->Log("BODGE TIME", "YES IT GOES HERE");
+		auto* table = CDClientManager::Instance()->GetTable<CDComponentsRegistryTable>("ComponentsRegistry");
+
+        const auto componentId = table->GetByIDAndType(item->GetLot(), COMPONENT_TYPE_RENDER);
+
+        std::stringstream query;
+
+        query << "SELECT render_asset FROM RenderComponent WHERE id = " << std::to_string(componentId) << ";";
+
+        auto result = CDClientDatabase::ExecuteQuery(query.str());
+
+        if (result.eof()) {
+            return;
+        }
+
+        std::string renderAsset = result.fieldIsNull(0) ? "" : std::string(result.getStringField(0));
+        std::vector<std::string> renderAssetSplit = GeneralUtils::SplitString(renderAsset, '\\');
+
+        std::string lxfmlPath = "res/BrickModels/" + GeneralUtils::SplitString(renderAssetSplit.back(), '.')[0] + ".lxfml";
+        std::ifstream file(lxfmlPath);
+
+        result.finalize();
+
+        if (!file.good()) {
+            return;
+        }
+
+        std::stringstream data;
+        data << file.rdbuf();
+
+        if (data.str().empty()) {
+            return;
+        }
+
+		printf("poggers! %s \n", std::string(data.str() + "\n").c_str());
+
+		this->HandleBBBSaveRequest((uint8_t*)(data.str().c_str()), data.str().length(), 0, UNASSIGNED_SYSTEM_ADDRESS, model->GetPosition(), model->GetRotation());
 
 		break;
 	}
@@ -910,4 +947,140 @@ void PropertyManagementComponent::SetOwnerId(const LWOOBJID value)
 const std::map<LWOOBJID, LWOOBJID>& PropertyManagementComponent::GetModels() const
 {
 	return models;
+}
+
+void PropertyManagementComponent::HandleBBBSaveRequest(uint8_t* inData, uint32_t lxfmlSize, LWOOBJID localId, const SystemAddress& sysAddr, NiPoint3 pos, NiQuaternion rot) {
+    ObjectIDManager::Instance()->RequestPersistentID([=](uint32_t newID) {
+        LWOOBJID newIDL = newID;
+        newIDL = GeneralUtils::SetBit(newIDL, OBJECT_BIT_CHARACTER);
+        newIDL = GeneralUtils::SetBit(newIDL, OBJECT_BIT_PERSISTENT);
+
+        ObjectIDManager::Instance()->RequestPersistentID([=](uint32_t blueprintIDSmall) {
+            auto entity = EntityManager::Instance()->GetEntity(this->owner);
+
+            blueprintIDSmall = ObjectIDManager::GenerateRandomObjectID();
+            LWOOBJID blueprintID = blueprintIDSmall;
+            blueprintID = GeneralUtils::SetBit(blueprintID, OBJECT_BIT_CHARACTER);
+            blueprintID = GeneralUtils::SetBit(blueprintID, OBJECT_BIT_PERSISTENT);
+
+            //We need to get the propertyID: (stolen from Wincent's propertyManagementComp)
+            const auto& worldId = dZoneManager::Instance()->GetZone()->GetZoneID();
+
+            const auto zoneId = worldId.GetMapID();
+            const auto cloneId = worldId.GetCloneID();
+
+            std::stringstream query;
+
+            query << "SELECT id FROM PropertyTemplate WHERE mapID = " << std::to_string(zoneId) << ";";
+
+            auto result = CDClientDatabase::ExecuteQuery(query.str());
+
+            if (result.eof() || result.fieldIsNull(0)) {
+                return;
+            }
+
+            int templateId = result.getIntField(0);
+
+            result.finalize();
+
+            auto* propertyLookup = Database::CreatePreppedStmt("SELECT * FROM properties WHERE template_id = ? AND clone_id = ?;");
+
+            propertyLookup->setInt(1, templateId);
+            propertyLookup->setInt64(2, cloneId);
+
+            auto* propertyEntry = propertyLookup->executeQuery();
+            uint64_t propertyId = 0;
+
+            if (propertyEntry->next()) {
+                propertyId = propertyEntry->getUInt64(1);
+            }
+
+            delete propertyLookup;
+
+            //Insert into ugc:
+            auto ugcs = Database::CreatePreppedStmt("INSERT INTO `ugc`(`id`, `account_id`, `character_id`, `is_optimized`, `lxfml`, `bake_ao`, `filename`) VALUES (?,?,?,?,?,?,?)");
+            ugcs->setUInt(1, blueprintIDSmall);
+            ugcs->setInt(2, entity->GetParentUser()->GetAccountID());
+            ugcs->setInt(3, entity->GetCharacter()->GetID());
+            ugcs->setInt(4, 0);
+            std::string lxfmlData((char*)inData, lxfmlSize);
+            std::istringstream iss(lxfmlData);
+            ugcs->setBlob(5, &iss);
+            ugcs->setBoolean(6, false);
+            ugcs->setString(7, "weedeater.lxfml");
+            ugcs->execute();
+            delete ugcs;
+
+            //Insert into the db as a BBB model:
+            auto* stmt = Database::CreatePreppedStmt("INSERT INTO `properties_contents`(`id`, `property_id`, `ugc_id`, `lot`, `x`, `y`, `z`, `rx`, `ry`, `rz`, `rw`) VALUES (?,?,?,?,?,?,?,?,?,?,?)");
+            stmt->setUInt64(1, newIDL);
+            stmt->setUInt64(2, propertyId);
+            stmt->setUInt(3, blueprintIDSmall);
+            stmt->setUInt(4, 14);     //14 is the lot the BBB models use
+            stmt->setDouble(5, pos.GetX()); //x
+            stmt->setDouble(6, pos.GetY()); //y
+            stmt->setDouble(7, pos.GetZ()); //z
+            stmt->setDouble(8, rot.GetX());
+            stmt->setDouble(9, rot.GetY());
+            stmt->setDouble(10, rot.GetZ());
+            stmt->setDouble(11, rot.GetW());
+            stmt->execute();
+            delete stmt;
+
+            //Tell the client their model is saved: (this causes us to actually pop out of our current state):
+            CBITSTREAM;
+            PacketUtils::WriteHeader(bitStream, CLIENT, MSG_CLIENT_BLUEPRINT_SAVE_RESPONSE);
+            bitStream.Write(localId);
+            bitStream.Write<unsigned int>(0);
+            bitStream.Write<unsigned int>(1);
+            bitStream.Write(blueprintID);
+
+            bitStream.Write(lxfmlSize + 9);
+
+            //Write a fake sd0 header:
+            bitStream.Write<unsigned char>(0x73); //s
+            bitStream.Write<unsigned char>(0x64); //d
+            bitStream.Write<unsigned char>(0x30); //0
+            bitStream.Write<unsigned char>(0x01); //1
+            bitStream.Write<unsigned char>(0xFF); //end magic
+
+            bitStream.Write(lxfmlSize);
+
+            for (size_t i = 0; i < lxfmlSize; ++i) bitStream.Write(inData[i]);
+
+            SEND_PACKET;
+
+            // Now we have to construct this object:
+
+            EntityInfo info;
+            info.lot = 14;
+            info.pos = pos;
+            info.rot = rot;
+            info.spawner = nullptr;
+            info.spawnerID = entity->GetObjectID();
+            info.spawnerNodeID = 0;
+
+            LDFBaseData* ldfBlueprintID = new LDFData<LWOOBJID>(u"blueprintid", blueprintID);
+            LDFBaseData* componentWhitelist = new LDFData<int>(u"componentWhitelist", 1);
+            LDFBaseData* modelType = new LDFData<int>(u"modelType", 2);
+            LDFBaseData* propertyObjectID = new LDFData<bool>(u"propertyObjectID", true);
+            LDFBaseData* userModelID = new LDFData<LWOOBJID>(u"userModelID", newIDL);
+
+            info.settings.push_back(ldfBlueprintID);
+            info.settings.push_back(componentWhitelist);
+            info.settings.push_back(modelType);
+            info.settings.push_back(propertyObjectID);
+            info.settings.push_back(userModelID);
+
+            Entity* newEntity = EntityManager::Instance()->CreateEntity(info, nullptr);
+            if (newEntity) {
+                EntityManager::Instance()->ConstructEntity(newEntity);
+
+                //Make sure the propMgmt doesn't delete our model after the server dies
+                //Trying to do this after the entity is constructed. Shouldn't really change anything but
+                //there was an issue with builds not appearing since it was placed above ConstructEntity.
+                PropertyManagementComponent::Instance()->AddModel(newEntity->GetObjectID(), newIDL);
+            }
+        });
+    });
 }
